@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <random>
+#include <cmath>
 
 #include "cadmium/modeling/devs/atomic.hpp"
 #include "fight_engine_state.hpp"
@@ -38,6 +39,136 @@ public:
         srand(time(nullptr));
     }
 
+    // 🔴 Función para calcular puntos SOLO por técnicas ofensivas exitosas
+    int calculatePoints(const Technique &tech, const std::string &attacker) const
+    {
+        // 🔴 SOLO técnicas ofensivas dan puntos
+        if (tech.type != "Ofensiva")
+        {
+            return 0; // Técnicas defensivas y neutras no dan puntos
+        }
+
+        int base_points = 0;
+
+        // Puntos basados en la complejidad de la técnica ofensiva
+        if (tech.category == "Golpe")
+        {
+            base_points = 1;
+            // Golpes pesados dan más puntos
+            if (tech.energy_cost > 15)
+                base_points += 1;
+        }
+        else if (tech.category == "Llave")
+        {
+            base_points = 2;
+            // Llaves complejas dan más puntos
+            if (tech.energy_cost > 20)
+                base_points += 1;
+        }
+        else if (tech.category == "Derribo")
+        {
+            base_points = 2;
+            // Derribos con control dan más puntos
+            if (tech.energy_gain > 0)
+                base_points += 1; // Si mantiene posición ventajosa
+        }
+        else if (tech.category == "Sumision")
+        {
+            base_points = 4; // Las sumisiones dan muchos puntos pero son difíciles
+        }
+        else
+        {
+            base_points = 1; // Categoría genérica
+        }
+
+        // Bonus por velocidad
+        if (tech.time_cost < 0.5)
+            base_points += 1;
+
+        // Bonus por eficiencia energética (si aplica)
+        if (tech.energy_gain > 0 && tech.energy_cost > 0)
+        {
+            double efficiency = static_cast<double>(tech.energy_gain) / tech.energy_cost;
+            if (efficiency > 1.5)
+                base_points += 1;
+        }
+
+        return base_points;
+    }
+
+    // 🔴 Calcular probabilidad de éxito basada en energía y tipo de técnica
+    int calculateSuccessChance(const FightAction &act, int attacker_energy, int opponent_energy, double total_time) const
+    {
+        int base_chance = 50; // 50% base
+
+        // Modificar según energía del atacante
+        if (attacker_energy > 80)
+            base_chance += 10;
+        else if (attacker_energy > 50)
+            base_chance += 5;
+        else if (attacker_energy < 30)
+            base_chance -= 15;
+        else if (attacker_energy < 10)
+            base_chance -= 30;
+
+        // Modificar según energía del oponente (defensa)
+        if (opponent_energy > 80)
+            base_chance -= 10;
+        else if (opponent_energy < 30)
+            base_chance += 10;
+
+        // Modificar según tipo de técnica
+        if (act.tech.type == "Defensiva")
+        {
+            base_chance += 15; // Las defensas son más confiables
+        }
+        else if (act.tech.type == "Ofensiva")
+        {
+            // 🔴 TÉCNICAS DE SUMISIÓN MUCHO MÁS DIFÍCILES, ESPECIALMENTE TEMPRANO
+            if (act.tech.category == "Sumision")
+            {
+                base_chance -= 50; // 50% menos de probabilidad base
+
+                // Aún más difícil al inicio del combate
+                if (total_time < 60)
+                { // Primer minuto
+                    base_chance -= 20;
+                    std::cout << "[DEBUG][ENGINE] Sumisión temprana (t < 60s) - probabilidad muy reducida" << std::endl;
+                }
+                else if (total_time < 120)
+                { // Primeros 2 minutos
+                    base_chance -= 10;
+                }
+
+                // Más difícil si el oponente tiene buena energía
+                if (opponent_energy > 70)
+                    base_chance -= 10;
+                if (opponent_energy > 50)
+                    base_chance -= 5;
+
+                // Más fácil si el oponente está muy cansado
+                if (opponent_energy < 20)
+                    base_chance += 15;
+
+                std::cout << "[DEBUG][ENGINE] Técnica de sumisión - probabilidad final: "
+                          << base_chance << "%" << std::endl;
+            }
+
+            if (act.tech.energy_cost > 25)
+                base_chance -= 10; // Técnicas pesadas
+            if (act.tech.time_cost < 0.5)
+                base_chance += 5; // Técnicas rápidas
+        }
+
+        // Limitar entre 5% y 90%
+        if (base_chance < 5)
+            base_chance = 5;
+        if (base_chance > 90)
+            base_chance = 90;
+
+        return base_chance;
+    }
+
     void externalTransition(FightEngineState &s, double e) const override
     {
         // Si recibimos una acción, procesarla
@@ -48,13 +179,31 @@ public:
                 std::cout << "[DEBUG][ENGINE] Recibí acción de: "
                           << act.fighter_id
                           << " - " << act.tech.name
-                          << " (Tiempo: " << act.tech.time_cost << "s)" << std::endl;
+                          << " (Tipo: " << act.tech.type
+                          << ", Tiempo ejecución: " << act.tech.time_cost << "s)" << std::endl;
 
                 const Technique &t = act.tech;
-                bool success = (rand() % 100) < 50; // 50% éxito
 
-                // Actualizar tiempo total (usando el tiempo de la técnica)
-                s.total_time += t.time_cost;
+                // Calcular energías
+                int attacker_energy = (act.fighter_id == "fighterA")
+                                          ? s.energy_fighterA
+                                          : s.energy_fighterB;
+                int opponent_energy = (act.fighter_id == "fighterA")
+                                          ? s.energy_fighterB
+                                          : s.energy_fighterA;
+
+                // Calcular probabilidad de éxito dinámica
+                int success_chance = calculateSuccessChance(act, attacker_energy, opponent_energy, s.total_time);
+                bool success = (rand() % 100) < success_chance;
+
+                std::cout << "[DEBUG][ENGINE] Probabilidad éxito: " << success_chance
+                          << "% (Éxito: " << (success ? "SÍ" : "NO") << ")" << std::endl;
+
+                // 🔴 CORRECCIÓN: Actualizar tiempo total CON EL TIEMPO DE LA TÉCNICA
+                s.total_time += t.time_cost; // 🔴 Usar t.time_cost en lugar de valor fijo
+
+                std::cout << "[DEBUG][ENGINE] Tiempo agregado: " << t.time_cost
+                          << "s (Total acumulado: " << s.total_time << "s)" << std::endl;
 
                 // Actualizar energía
                 if (act.fighter_id == "fighterA")
@@ -86,6 +235,31 @@ public:
                 {
                     s.global_state = t.to_state_success;
                     s.last_success = true;
+
+                    // 🔴 Asignar puntos SOLO si es técnica ofensiva exitosa
+                    if (t.type == "Ofensiva")
+                    {
+                        int points_earned = calculatePoints(t, act.fighter_id);
+                        if (act.fighter_id == "fighterA")
+                        {
+                            s.points_fighterA += points_earned;
+                            std::cout << "[DEBUG][ENGINE] 🥊 PUNTOS +" << points_earned
+                                      << " para fighterA (Total: " << s.points_fighterA << ")" << std::endl;
+                        }
+                        else
+                        {
+                            s.points_fighterB += points_earned;
+                            std::cout << "[DEBUG][ENGINE] 🥊 PUNTOS +" << points_earned
+                                      << " para fighterB (Total: " << s.points_fighterB << ")" << std::endl;
+                        }
+                    }
+                    else
+                    {
+                        // Técnica defensiva o neutra exitosa - no da puntos
+                        std::cout << "[DEBUG][ENGINE] Técnica " << t.type
+                                  << " exitosa - sin puntos" << std::endl;
+                    }
+
                     std::cout << "[DEBUG][ENGINE] ÉXITO -> " << s.global_state
                               << " (Energía A: " << s.energy_fighterA
                               << ", B: " << s.energy_fighterB << ")" << std::endl;
@@ -102,70 +276,67 @@ public:
                 s.exchanges++;
                 s.last_actor = act.fighter_id;
 
-                // Lógica de turnos considerando energía
+                // 🔴 ACTUALIZAR TIEMPOS DE PENSAMIENTO BASADO EN ENERGÍA
+                s.updateThinkTimes();
+
+                // 🔴 DETERMINAR PRÓXIMO ATACANTE BASADO EN QUIÉN PIENSA MÁS RÁPIDO
+                // Después de una acción exitosa, mantener iniciativa si:
+                // 1. Tengo más energía que el oponente
+                // 2. Mi tiempo de pensamiento es menor
+
+                int my_energy = (act.fighter_id == "fighterA") ? s.energy_fighterA : s.energy_fighterB;
+                int opp_energy = (act.fighter_id == "fighterA") ? s.energy_fighterB : s.energy_fighterA;
+                double my_think_time = (act.fighter_id == "fighterA") ? s.think_time_A : s.think_time_B;
+                double opp_think_time = (act.fighter_id == "fighterA") ? s.think_time_B : s.think_time_A;
+
                 if (success)
                 {
-                    // Éxito: atacante mantiene iniciativa si tiene energía
-                    std::string current_as_A = (act.fighter_id == "fighterA") ? "fighterA" : "fighterB";
-                    int current_energy = (current_as_A == "fighterA") ? s.energy_fighterA : s.energy_fighterB;
-
-                    if (current_energy > 20)
-                    { // Si tiene suficiente energía
-                        s.current_actor = current_as_A;
+                    // Éxito: tengo ventaja
+                    if (my_energy > opp_energy * 0.7 && my_think_time < opp_think_time * 1.2)
+                    {
+                        // Mantengo la iniciativa si tengo ventaja energética y mental
+                        s.current_actor = act.fighter_id;
+                        std::cout << "[DEBUG][ENGINE] " << act.fighter_id
+                                  << " mantiene iniciativa (ventaja energética/mental)" << std::endl;
                     }
                     else
                     {
-                        // Cambiar turno por falta de energía
-                        s.current_actor = (current_as_A == "fighterA") ? "fighterB" : "fighterA";
-                        std::swap(s.actor_A, s.actor_O);
+                        // Pierdo la iniciativa
+                        s.current_actor = (act.fighter_id == "fighterA") ? "fighterB" : "fighterA";
+                        std::cout << "[DEBUG][ENGINE] " << act.fighter_id
+                                  << " pierde iniciativa (oponente recupera)" << std::endl;
                     }
                 }
                 else
                 {
-                    // Fallo: 70% chance que el oponente tome el turno
+                    // Falla: probablemente pierdo iniciativa
                     if (rand() % 100 < 70)
-                    {
-                        s.current_actor = s.actor_O; // Oponente ataca
-                        std::swap(s.actor_A, s.actor_O);
+                    { // 70% chance de perder iniciativa
+                        s.current_actor = (act.fighter_id == "fighterA") ? "fighterB" : "fighterA";
+                        std::cout << "[DEBUG][ENGINE] Falla -> " << act.fighter_id
+                                  << " pierde iniciativa" << std::endl;
                     }
                     else
                     {
-                        s.current_actor = s.actor_A; // Atacante mantiene turno
+                        s.current_actor = act.fighter_id;
+                        std::cout << "[DEBUG][ENGINE] Falla pero " << act.fighter_id
+                                  << " mantiene iniciativa" << std::endl;
                     }
                 }
 
                 std::cout << "[DEBUG][ENGINE] ROLES: A=" << s.actor_A
-                          << "(" << s.energy_fighterA << "%)"
+                          << "(" << s.energy_fighterA << "%," << s.points_fighterA << "pts, pensar:" << s.think_time_A << "s)"
                           << ", O=" << s.actor_O
-                          << "(" << s.energy_fighterB << "%)" << std::endl;
-                std::cout << "[DEBUG][ENGINE] Próximo atacante: " << s.current_actor << std::endl;
-                std::cout << "[DEBUG][ENGINE] Tiempo total: " << s.total_time << "s" << std::endl;
+                          << "(" << s.energy_fighterB << "%," << s.points_fighterB << "pts, pensar:" << s.think_time_B << "s)" << std::endl;
+                std::cout << "[DEBUG][ENGINE] Próximo atacante: " << s.current_actor
+                          << " (piensa en " << ((s.current_actor == "fighterA") ? s.think_time_A : s.think_time_B) << "s)" << std::endl;
+                std::cout << "[DEBUG][ENGINE] Tiempo total: " << s.total_time << "/" << s.MAX_FIGHT_TIME << "s" << std::endl;
 
-                // Verificar fin del combate
-                if (s.global_state.find("Sumision") != std::string::npos ||
-                    s.global_state.find("Sumisión") != std::string::npos ||
-                    s.global_state.find("KO") != std::string::npos ||
-                    (s.energy_fighterA <= 0 && s.energy_fighterB <= 0))
+                // 🔴 Verificar condiciones de victoria
+                checkVictoryConditions(s);
+
+                if (s.finished)
                 {
-                    s.finished = true;
-                    std::cout << "[DEBUG][ENGINE] ¡COMBATE TERMINADO!" << std::endl;
-                    std::cout << "[DEBUG][ENGINE] Razón: ";
-                    if (s.global_state.find("Sumision") != std::string::npos)
-                    {
-                        std::cout << "Sumisión" << std::endl;
-                    }
-                    else if (s.energy_fighterA <= 0 && s.energy_fighterB <= 0)
-                    {
-                        std::cout << "Ambos sin energía" << std::endl;
-                    }
-                    else if (s.energy_fighterA <= 0)
-                    {
-                        std::cout << "FighterA sin energía" << std::endl;
-                    }
-                    else if (s.energy_fighterB <= 0)
-                    {
-                        std::cout << "FighterB sin energía" << std::endl;
-                    }
                     s.current_actor = "none";
                     return;
                 }
@@ -177,10 +348,136 @@ public:
             std::cout << "[DEBUG][ENGINE] Inicio. ROLES: A=" << s.actor_A
                       << ", O=" << s.actor_O << std::endl;
             std::cout << "[DEBUG][ENGINE] Energía inicial: A=100%, B=100%" << std::endl;
-            std::cout << "[DEBUG][ENGINE] Primer atacante: " << s.current_actor << std::endl;
+            std::cout << "[DEBUG][ENGINE] Puntos iniciales: A=0, B=0" << std::endl;
+            std::cout << "[DEBUG][ENGINE] Tiempo máximo: " << s.MAX_FIGHT_TIME << "s" << std::endl;
+            std::cout << "[DEBUG][ENGINE] Primer atacante: " << s.current_actor
+                      << " (piensa en " << ((s.current_actor == "fighterA") ? s.think_time_A : s.think_time_B) << "s)" << std::endl;
         }
 
         s.has_output = true;
+    }
+
+    // 🔴 Función para verificar todas las condiciones de victoria
+    void checkVictoryConditions(FightEngineState &s) const
+    {
+        // 1. Verificar tiempo agotado
+        if (s.total_time >= s.MAX_FIGHT_TIME)
+        {
+            s.finished = true;
+            s.victory_type = FightEngineState::POINTS;
+
+            if (s.points_fighterA > s.points_fighterB)
+            {
+                s.winner = "fighterA";
+                std::cout << "[DEBUG][ENGINE] ⏰ TIEMPO AGOTADO! Ganador por puntos: fighterA"
+                          << " (" << s.points_fighterA << " vs " << s.points_fighterB << ")" << std::endl;
+            }
+            else if (s.points_fighterB > s.points_fighterA)
+            {
+                s.winner = "fighterB";
+                std::cout << "[DEBUG][ENGINE] ⏰ TIEMPO AGOTADO! Ganador por puntos: fighterB"
+                          << " (" << s.points_fighterB << " vs " << s.points_fighterA << ")" << std::endl;
+            }
+            else
+            {
+                s.winner = "Empate";
+                std::cout << "[DEBUG][ENGINE] ⏰ TIEMPO AGOTADO! EMPATE por puntos"
+                          << " (" << s.points_fighterA << " vs " << s.points_fighterB << ")" << std::endl;
+            }
+            return;
+        }
+
+        // 2. Verificar sumisión
+        if (s.global_state.find("Sumision") != std::string::npos ||
+            s.global_state.find("Sumisión") != std::string::npos)
+        {
+
+            // 🔴 VERIFICAR QUE NO SEA MUY TEMPRANO
+            if (s.total_time < 30)
+            { // Muy temprano para sumisión real
+                std::cout << "[DEBUG][ENGINE] Sumisión muy temprana (t=" << s.total_time
+                          << "s) - probablemente escape" << std::endl;
+                // Tratar como fallo de sumisión
+                s.global_state = "Pos(A:De_Pie, O:De_Pie)"; // Reset a posición neutral
+                s.last_success = false;
+                return;
+            }
+
+            s.finished = true;
+            s.victory_type = FightEngineState::SUBMISSION;
+
+            // Determinar quién aplicó la sumisión
+            if (s.last_success && s.last_actor == "fighterA")
+            {
+                s.winner = "fighterA";
+                std::cout << "[DEBUG][ENGINE] 🏆 VICTORIA POR SUMISIÓN! Ganador: fighterA (t="
+                          << s.total_time << "s)" << std::endl;
+            }
+            else if (s.last_success && s.last_actor == "fighterB")
+            {
+                s.winner = "fighterB";
+                std::cout << "[DEBUG][ENGINE] 🏆 VICTORIA POR SUMISIÓN! Ganador: fighterB (t="
+                          << s.total_time << "s)" << std::endl;
+            }
+            else
+            {
+                // Si la sumisión falló, no hay victoria aún
+                s.finished = false;
+                std::cout << "[DEBUG][ENGINE] Sumisión fallida - continúa el combate" << std::endl;
+            }
+            return;
+        }
+
+        // 3. Verificar KO (sin energía)
+        if (s.energy_fighterA <= 0 && s.energy_fighterB <= 0)
+        {
+            s.finished = true;
+            s.victory_type = FightEngineState::DOUBLE_KO;
+            s.winner = "Empate";
+            std::cout << "[DEBUG][ENGINE] 🥊 DOBLE KO! Ambos sin energía (t="
+                      << s.total_time << "s)" << std::endl;
+            return;
+        }
+        else if (s.energy_fighterA <= 0)
+        {
+            s.finished = true;
+            s.victory_type = FightEngineState::KO;
+            s.winner = "fighterB";
+            std::cout << "[DEBUG][ENGINE] 🥊 KO! fighterA sin energía. Ganador: fighterB (t="
+                      << s.total_time << "s)" << std::endl;
+            return;
+        }
+        else if (s.energy_fighterB <= 0)
+        {
+            s.finished = true;
+            s.victory_type = FightEngineState::KO;
+            s.winner = "fighterA";
+            std::cout << "[DEBUG][ENGINE] 🥊 KO! fighterB sin energía. Ganador: fighterA (t="
+                      << s.total_time << "s)" << std::endl;
+            return;
+        }
+
+        // 4. Verificar diferencia de puntos muy grande (victoria técnica)
+        int point_difference = std::abs(s.points_fighterA - s.points_fighterB);
+        if (point_difference >= 20 && s.total_time > s.MAX_FIGHT_TIME / 2)
+        {
+            s.finished = true;
+            s.victory_type = FightEngineState::POINTS;
+
+            if (s.points_fighterA > s.points_fighterB)
+            {
+                s.winner = "fighterA";
+                std::cout << "[DEBUG][ENGINE] 🏆 VICTORIA TÉCNICA! fighterA lidera por "
+                          << point_difference << " puntos (t=" << s.total_time << "s)" << std::endl;
+            }
+            else
+            {
+                s.winner = "fighterB";
+                std::cout << "[DEBUG][ENGINE] 🏆 VICTORIA TÉCNICA! fighterB lidera por "
+                          << point_difference << " puntos (t=" << s.total_time << "s)" << std::endl;
+            }
+            return;
+        }
     }
 
     void internalTransition(FightEngineState &s) const override
@@ -197,13 +494,24 @@ public:
         std::string estado_para_A = convertRoles(s.global_state, s.actor_A, s.actor_O);
         std::string estado_para_B = convertRoles(s.global_state, s.actor_A, s.actor_O);
 
-        // FighterA siempre recibe su perspectiva (rol que ocupa)
+        // Calcular puntos para cada luchador según su rol actual
+        int points_A = (s.actor_A == "fighterA") ? s.points_fighterA : s.points_fighterB;
+        int points_B = (s.actor_O == "fighterB") ? s.points_fighterB : s.points_fighterA;
+
+        double time_remaining = s.MAX_FIGHT_TIME - s.total_time;
+        if (time_remaining < 0)
+            time_remaining = 0;
+
+        // FighterA siempre recibe su perspectiva
         FightUpdate msgA(
             s.current_actor,
             estado_para_A,
             estado_para_A,
             s.last_success,
             s.finished);
+        msgA.my_points = points_A;
+        msgA.opp_points = points_B;
+        msgA.time_remaining = time_remaining;
 
         // FighterB siempre recibe su perspectiva
         FightUpdate msgB(
@@ -212,6 +520,9 @@ public:
             estado_para_B,
             s.last_success,
             s.finished);
+        msgB.my_points = points_B;
+        msgB.opp_points = points_A;
+        msgB.time_remaining = time_remaining;
 
         outA->addMessage(msgA);
         outB->addMessage(msgB);
@@ -219,7 +530,10 @@ public:
         std::cout << "[DEBUG][ENGINE] Enviando update. Actor: " << s.current_actor
                   << " | Estado: " << s.global_state << std::endl;
         std::cout << "[DEBUG][ENGINE] ROLES: A=" << s.actor_A << " O=" << s.actor_O << std::endl;
-        std::cout << "[DEBUG][ENGINE] Para todos: " << estado_para_A << std::endl;
+        std::cout << "[DEBUG][ENGINE] PUNTOS: A=" << s.points_fighterA << " B=" << s.points_fighterB << std::endl;
+        std::cout << "[DEBUG][ENGINE] TIEMPO: " << s.total_time << "/" << s.MAX_FIGHT_TIME
+                  << "s (Restante: " << time_remaining << "s)" << std::endl;
+        std::cout << "[DEBUG][ENGINE] T. PENSAR: A=" << s.think_time_A << "s B=" << s.think_time_B << "s" << std::endl;
     }
 
     double timeAdvance(const FightEngineState &s) const override

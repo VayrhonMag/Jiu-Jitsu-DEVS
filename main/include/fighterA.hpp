@@ -30,7 +30,9 @@ public:
         for (const auto &u : in->getBag())
         {
             std::cout << "[DEBUG][fighterA] Recibí update. Actor: "
-                      << u.actor << ", Estado: " << u.my_pos << std::endl;
+                      << u.actor << ", Estado: " << u.my_pos 
+                      << ", Mis puntos: " << u.my_points 
+                      << ", Tiempo restante: " << u.time_remaining << "s" << std::endl;
 
             // Si el combate terminó
             if (u.finished)
@@ -41,40 +43,31 @@ public:
                 return;
             }
 
-            // Extraer mi posición del estado convertido
+            // Actualizar información
+            s.my_points = u.my_points;
+            s.opponent_points = u.opp_points;
+            s.time_remaining = u.time_remaining;
+            s.total_time = 300.0 - u.time_remaining; // 🔴 Calcular tiempo transcurrido
+            s.is_winning = (u.my_points > u.opp_points);
+
+            // Extraer mi posición
             s.position = extractMyPosition(u.my_pos, "fighterA");
             s.opponent = extractMyPosition(u.my_pos, "fighterB");
 
-            // 🔴 INFERIR QUIÉN ES EL ATACANTE (A) EN LA REPRESENTACIÓN
-            std::string estado = u.my_pos;
-            size_t posA = estado.find("fighterA:");
-            size_t posB = estado.find("fighterB:");
-
-            std::string atacante_representacion;
-            if (posA < posB)
-            {
-                // fighterA aparece primero -> fighterA es A (Atacante en la representación)
-                atacante_representacion = "fighterA";
-            }
-            else
-            {
-                // fighterB aparece primero -> fighterB es A (Atacante en la representación)
-                atacante_representacion = "fighterB";
-            }
-
-            // Yo soy atacante si:
-            // 1. El motor dice que soy el actor ACTUAL
-            // 2. Y además soy el atacante en la representación (rol A)
-            s.is_attacker = (u.actor == "fighterA") && (atacante_representacion == "fighterA");
-
-            // Yo pienso SOLO si soy el atacante actual
+            // Determinar si soy el atacante
+            s.is_attacker = (u.actor == "fighterA");
             s.can_think = (u.actor == "fighterA");
+
+            s.exchanges++; // 🔴 Incrementar intercambios
 
             std::cout << "[DEBUG][fighterA] Pos: " << s.position
                       << ", Opp: " << s.opponent
-                      << ", Atacante en rep: " << atacante_representacion
+                      << ", Actor actual: " << u.actor
                       << ", Soy atacante: " << s.is_attacker
-                      << ", CanThink: " << s.can_think << std::endl;
+                      << ", CanThink: " << s.can_think 
+                      << ", Puntos: " << s.my_points << "-" << s.opponent_points 
+                      << ", Tiempo: " << s.total_time << "/300s" 
+                      << ", Intercambios: " << s.exchanges << std::endl;
         }
     }
 
@@ -84,30 +77,28 @@ public:
         s.is_attacker = false;
     }
 
-    // En fighterA.hpp y fighterB.hpp (sección output)
     void output(const FighterState &s) const override
     {
         if (!s.can_think || !s.is_attacker)
             return;
 
-        std::cout << "[DEBUG][" << s.my_name << "] Buscando técnica. Mi posición: "
-                  << s.position << " (Energía: " << s.stamina << "%)" << std::endl;
+        std::cout << "[DEBUG][" << s.my_name << "] Buscando técnica. Mi posición: " << s.position 
+                  << " (Tiempo: " << s.total_time << "s, Intercambios: " << s.exchanges << ")" << std::endl;
 
         std::vector<const Technique *> valid_techniques;
-        std::string patron_busqueda = "A:" + s.position;
-
-        // Buscar técnicas válidas
+        
+        // Buscar técnicas válidas como A
+        std::string patron_A = "A:" + s.position;
         for (const auto &t : s.techniques)
         {
-            // Verificar si la técnica aplica a mi posición
-            size_t pos = t.from_state.find(patron_busqueda);
+            size_t pos = t.from_state.find(patron_A);
             bool match = false;
 
             if (pos != std::string::npos)
             {
-                if (pos + patron_busqueda.length() < t.from_state.length())
+                if (pos + patron_A.length() < t.from_state.length())
                 {
-                    char siguiente = t.from_state[pos + patron_busqueda.length()];
+                    char siguiente = t.from_state[pos + patron_A.length()];
                     match = (siguiente == ',' || siguiente == ')');
                 }
                 else
@@ -116,7 +107,6 @@ public:
                 }
             }
 
-            // Verificar si tengo suficiente energía
             bool has_energy = s.stamina >= t.energy_cost;
 
             if (match && has_energy)
@@ -128,17 +118,17 @@ public:
         // Si no encuentro como A, buscar como O
         if (valid_techniques.empty())
         {
-            std::string patron_oponente = "O:" + s.position;
+            std::string patron_O = "O:" + s.position;
             for (const auto &t : s.techniques)
             {
-                size_t pos = t.from_state.find(patron_oponente);
+                size_t pos = t.from_state.find(patron_O);
                 bool match = false;
 
                 if (pos != std::string::npos)
                 {
-                    if (pos + patron_oponente.length() < t.from_state.length())
+                    if (pos + patron_O.length() < t.from_state.length())
                     {
-                        char siguiente = t.from_state[pos + patron_oponente.length()];
+                        char siguiente = t.from_state[pos + patron_O.length()];
                         match = (siguiente == ',' || siguiente == ')');
                     }
                     else
@@ -159,23 +149,93 @@ public:
         // Seleccionar técnica
         if (!valid_techniques.empty())
         {
-            // Seleccionar la técnica más eficiente energéticamente
             const Technique *selected = valid_techniques[0];
-            double best_score = 0.0;
+            double best_score = -1000.0;
 
             for (const auto *t : valid_techniques)
             {
-                // Puntaje: eficiencia energética + velocidad
-                double efficiency = (t->energy_cost > 0) ? (double)t->energy_gain / t->energy_cost : 1.0;
+                double score = 0.0;
+                
+                // 🔴 ESTRATEGIA MEJORADA BASADA EN TIEMPO
+                
+                // Base: eficiencia energética
+                double efficiency = (t->energy_cost > 0) ? 
+                    (double)t->energy_gain / t->energy_cost : 1.0;
+                
+                // Velocidad
                 double speed = 1.0 / (t->time_cost + 0.1);
-                double score = efficiency * 2.0 + speed;
-
-                // Bonus para técnicas defensivas si la energía es baja
-                if (s.stamina < 30 && t->type == "Defensiva")
-                {
-                    score += 1.5;
+                
+                // 🔴 ESTRATEGIA TEMPORAL:
+                // - Primer minuto: juego seguro, defensas y posiciones
+                // - 1-2 minutos: técnicas de control y puntos
+                // - 2+ minutos: buscar finalización si hay ventaja
+                
+                if (s.total_time < 60) { // Primer minuto
+                    if (t->type == "Defensiva") {
+                        score += 3.0; // Prioridad alta a defensas
+                    } else if (t->type == "Neutra") {
+                        score += 2.0; // Técnicas de posición
+                    } else if (t->type == "Ofensiva") {
+                        score += 1.0; // Ofensivas bajas
+                        if (t->category == "Sumision") {
+                            score -= 5.0; // Evitar sumisiones tempranas
+                        }
+                    }
+                } 
+                else if (s.total_time < 120) { // Minutos 1-2
+                    if (t->type == "Ofensiva") {
+                        score += 2.5; // Buscar puntos
+                        if (t->category == "Sumision") {
+                            // Solo sumisiones si tengo ventaja clara
+                            if (s.is_winning && s.my_points > s.opponent_points + 5) {
+                                score += 1.0;
+                            } else {
+                                score -= 2.0;
+                            }
+                        }
+                    } else if (t->type == "Defensiva") {
+                        score += 1.5;
+                    } else {
+                        score += 1.0;
+                    }
                 }
-
+                else { // Después de 2 minutos
+                    if (t->type == "Ofensiva") {
+                        score += 3.0; // Prioridad alta a ofensivas
+                        if (t->category == "Sumision") {
+                            // Sumisiones más probables si:
+                            // 1. Tengo ventaja de puntos
+                            // 2. El oponente está cansado (baja stamina)
+                            // 3. Llevo varios intercambios
+                            if (s.is_winning && s.stamina > 40 && s.exchanges > 8) {
+                                score += 3.0;
+                                std::cout << "[DEBUG][" << s.my_name 
+                                          << "] Considerando sumisión (ventaja tardía)" << std::endl;
+                            }
+                        }
+                    } else if (t->type == "Defensiva") {
+                        score += 1.0;
+                    } else {
+                        score += 0.5;
+                    }
+                }
+                
+                // Bonus por situación específica
+                if (!s.is_winning && s.time_remaining < 60) {
+                    // Perdiendo y poco tiempo -> ofensiva agresiva
+                    if (t->type == "Ofensiva") score += 2.0;
+                }
+                
+                if (s.is_winning && s.time_remaining < 60) {
+                    // Ganando y poco tiempo -> juego seguro
+                    if (t->type == "Defensiva") score += 1.5;
+                }
+                
+                // Penalización por bajo stamina
+                double stamina_penalty = (100.0 - s.stamina) / 200.0; // Penalización reducida
+                
+                score = score + efficiency * 1.0 + speed * 0.5 - stamina_penalty;
+                
                 if (score > best_score)
                 {
                     best_score = score;
@@ -185,15 +245,15 @@ public:
 
             std::cout << "[DEBUG][" << s.my_name << "] Seleccionada: "
                       << selected->name
-                      << " (E: " << selected->energy_cost << "/"
+                      << " (Tipo: " << selected->type << "/" << selected->category
+                      << ", E: " << selected->energy_cost << "/"
                       << selected->energy_gain << " T: " << selected->time_cost << "s)" << std::endl;
             out->addMessage(FightAction(s.my_name, *selected));
         }
         else
         {
             std::cout << "[ERROR][" << s.my_name << "] No encontré técnica válida"
-                      << " para posición: " << s.position
-                      << " con energía: " << s.stamina << std::endl;
+                      << " para posición: " << s.position << std::endl;
         }
     }
 
@@ -201,7 +261,13 @@ public:
     {
         if (s.can_think && s.is_attacker)
         {
-            return 0.1;
+            // 🔴 TIEMPO DE PENSAMIENTO DINÁMICO
+            // Base: 0.5-1.0 segundos
+            // Más cansado = piensa más lento
+            double base_time = 0.5 + (rand() % 500) / 1000.0; // 0.5-1.0s aleatorio
+            double stamina_factor = 1.0 + (100.0 - s.stamina) / 200.0; // +0% a +50%
+            
+            return base_time * stamina_factor;
         }
         return std::numeric_limits<double>::infinity();
     }
