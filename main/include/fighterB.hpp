@@ -7,6 +7,7 @@
 #include "messages.hpp"
 #include "technique_loader.hpp"
 #include "role_helper.hpp"
+#include "simple_profiles_tactical.hpp"  // 🔴 AGREGAR ESTE INCLUDE
 
 using namespace cadmium;
 
@@ -51,8 +52,15 @@ public:
             s.is_winning = (u.my_points > u.opp_points);
 
             // Extraer mi posición
+            std::string old_position = s.position; // 🔴 Guardar posición anterior
             s.position = extractMyPosition(u.my_pos, "fighterB");
             s.opponent = extractMyPosition(u.my_pos, "fighterA");
+            
+            // 🔴 NUEVO: Registrar posición si cambió
+            if (old_position != s.position) {
+                s.recordPosition(s.position);
+                std::cout << "[DEBUG][fighterB] Nueva posición registrada: " << s.position << std::endl;
+            }
 
             // Determinar si soy el atacante
             s.is_attacker = (u.actor == "fighterB");
@@ -146,109 +154,35 @@ public:
             }
         }
 
-        // Seleccionar técnica
+        // Seleccionar técnica CON HISTORIAL
         if (!valid_techniques.empty())
         {
-            const Technique *selected = valid_techniques[0];
-            double best_score = -1000.0;
+            const Technique *selected = selectTactical(
+                valid_techniques,
+                s.position,   // posición actual
+                "defensive",  // estilo
+                s.is_winning, // va ganando?
+                s.stamina,    // energía
+                s.recent_techniques,  // 🔴 PASAR HISTORIAL de técnicas
+                s.recent_positions    // 🔴 PASAR HISTORIAL de posiciones
+            );
 
-            for (const auto *t : valid_techniques)
-            {
-                double score = 0.0;
-                
-                // 🔴 ESTRATEGIA MEJORADA BASADA EN TIEMPO
-                
-                // Base: eficiencia energética
-                double efficiency = (t->energy_cost > 0) ? 
-                    (double)t->energy_gain / t->energy_cost : 1.0;
-                
-                // Velocidad
-                double speed = 1.0 / (t->time_cost + 0.1);
-                
-                // 🔴 ESTRATEGIA TEMPORAL:
-                // - Primer minuto: juego seguro, defensas y posiciones
-                // - 1-2 minutos: técnicas de control y puntos
-                // - 2+ minutos: buscar finalización si hay ventaja
-                
-                if (s.total_time < 60) { // Primer minuto
-                    if (t->type == "Defensiva") {
-                        score += 3.0; // Prioridad alta a defensas
-                    } else if (t->type == "Neutra") {
-                        score += 2.0; // Técnicas de posición
-                    } else if (t->type == "Ofensiva") {
-                        score += 1.0; // Ofensivas bajas
-                        if (t->category == "Sumision") {
-                            score -= 5.0; // Evitar sumisiones tempranas
-                        }
-                    }
-                } 
-                else if (s.total_time < 120) { // Minutos 1-2
-                    if (t->type == "Ofensiva") {
-                        score += 2.5; // Buscar puntos
-                        if (t->category == "Sumision") {
-                            // Solo sumisiones si tengo ventaja clara
-                            if (s.is_winning && s.my_points > s.opponent_points + 5) {
-                                score += 1.0;
-                            } else {
-                                score -= 2.0;
-                            }
-                        }
-                    } else if (t->type == "Defensiva") {
-                        score += 1.5;
-                    } else {
-                        score += 1.0;
-                    }
-                }
-                else { // Después de 2 minutos
-                    if (t->type == "Ofensiva") {
-                        score += 3.0; // Prioridad alta a ofensivas
-                        if (t->category == "Sumision") {
-                            // Sumisiones más probables si:
-                            // 1. Tengo ventaja de puntos
-                            // 2. El oponente está cansado (baja stamina)
-                            // 3. Llevo varios intercambios
-                            if (s.is_winning && s.stamina > 40 && s.exchanges > 8) {
-                                score += 3.0;
-                                std::cout << "[DEBUG][" << s.my_name 
-                                          << "] Considerando sumisión (ventaja tardía)" << std::endl;
-                            }
-                        }
-                    } else if (t->type == "Defensiva") {
-                        score += 1.0;
-                    } else {
-                        score += 0.5;
-                    }
-                }
-                
-                // Bonus por situación específica
-                if (!s.is_winning && s.time_remaining < 60) {
-                    // Perdiendo y poco tiempo -> ofensiva agresiva
-                    if (t->type == "Ofensiva") score += 2.0;
-                }
-                
-                if (s.is_winning && s.time_remaining < 60) {
-                    // Ganando y poco tiempo -> juego seguro
-                    if (t->type == "Defensiva") score += 1.5;
-                }
-                
-                // Penalización por bajo stamina
-                double stamina_penalty = (100.0 - s.stamina) / 200.0; // Penalización reducida
-                
-                score = score + efficiency * 1.0 + speed * 0.5 - stamina_penalty;
-                
-                if (score > best_score)
-                {
-                    best_score = score;
-                    selected = t;
-                }
+            if (selected) {
+                std::cout << "[DEBUG][" << s.my_name << "] Seleccionada: "
+                          << selected->name
+                          << " (Tipo: " << selected->type << "/" << selected->category
+                          << ", E: " << selected->energy_cost << "/"
+                          << selected->energy_gain << " T: " << selected->time_cost << "s)" << std::endl;
+            
+                // 🔴 REGISTRAR TÉCNICA USADA
+                const_cast<FighterState&>(s).recordTechnique(selected->id);
+                std::cout << "[DEBUG][" << s.my_name << "] Técnica registrada en historial: " 
+                          << selected->id << std::endl;
+            
+                out->addMessage(FightAction(s.my_name, *selected));
+            } else {
+                std::cout << "[ERROR][" << s.my_name << "] No se pudo seleccionar técnica" << std::endl;
             }
-
-            std::cout << "[DEBUG][" << s.my_name << "] Seleccionada: "
-                      << selected->name
-                      << " (Tipo: " << selected->type << "/" << selected->category
-                      << ", E: " << selected->energy_cost << "/"
-                      << selected->energy_gain << " T: " << selected->time_cost << "s)" << std::endl;
-            out->addMessage(FightAction(s.my_name, *selected));
         }
         else
         {
@@ -262,7 +196,6 @@ public:
         if (s.can_think && s.is_attacker)
         {
             // 🔴 TIEMPO DE PENSAMIENTO DINÁMICO
-            // Base: 0.5-1.0 segundos
             // Más cansado = piensa más lento
             double base_time = 0.5 + (rand() % 500) / 1000.0; // 0.5-1.0s aleatorio
             double stamina_factor = 1.0 + (100.0 - s.stamina) / 200.0; // +0% a +50%

@@ -41,60 +41,35 @@ public:
 
     // 🔴 Función para calcular puntos SOLO por técnicas ofensivas exitosas
     int calculatePoints(const Technique &tech, const std::string &attacker) const
-    {
-        // 🔴 SOLO técnicas ofensivas dan puntos
-        if (tech.type != "Ofensiva")
-        {
-            return 0; // Técnicas defensivas y neutras no dan puntos
-        }
-
-        int base_points = 0;
-
-        // Puntos basados en la complejidad de la técnica ofensiva
-        if (tech.category == "Golpe")
-        {
-            base_points = 1;
-            // Golpes pesados dan más puntos
-            if (tech.energy_cost > 15)
-                base_points += 1;
-        }
-        else if (tech.category == "Llave")
-        {
-            base_points = 2;
-            // Llaves complejas dan más puntos
-            if (tech.energy_cost > 20)
-                base_points += 1;
-        }
-        else if (tech.category == "Derribo")
-        {
-            base_points = 2;
-            // Derribos con control dan más puntos
-            if (tech.energy_gain > 0)
-                base_points += 1; // Si mantiene posición ventajosa
-        }
-        else if (tech.category == "Sumision")
-        {
-            base_points = 4; // Las sumisiones dan muchos puntos pero son difíciles
-        }
-        else
-        {
-            base_points = 1; // Categoría genérica
-        }
-
-        // Bonus por velocidad
-        if (tech.time_cost < 0.5)
-            base_points += 1;
-
-        // Bonus por eficiencia energética (si aplica)
-        if (tech.energy_gain > 0 && tech.energy_cost > 0)
-        {
-            double efficiency = static_cast<double>(tech.energy_gain) / tech.energy_cost;
-            if (efficiency > 1.5)
-                base_points += 1;
-        }
-
-        return base_points;
+{
+    // 🔴 MODIFICACIÓN: Raspados SÍ dan puntos aunque sean "Defensiva"
+    if (tech.type != "Ofensiva" && tech.category != "Raspado") {
+        return 0; // Solo ofensivas Y raspados dan puntos
     }
+    
+    int base_points = 0;
+    
+    if (tech.category == "Golpe") {
+        base_points = 1;
+    }
+    else if (tech.category == "Llave") {
+        base_points = 2;
+    }
+    else if (tech.category == "Derribo") {
+        base_points = 2;
+    }
+    else if (tech.category == "Sumision") {
+        base_points = 4;
+    }
+    else if (tech.category == "Raspado") {  // 🔴 NUEVO
+        base_points = 2; // 2 puntos por raspado (como IBJJF)
+    }
+    else {
+        base_points = 1;
+    }
+    
+    return base_points;
+}
 
     // 🔴 Calcular probabilidad de éxito basada en energía y tipo de técnica
     int calculateSuccessChance(const FightAction &act, int attacker_energy, int opponent_energy, double total_time) const
